@@ -117,30 +117,46 @@ def get_zeros_and_poles(F):
 
     return zeros, poles
 
-def plot_pz_map(zeros, poles):
+def plot_pz_map(zeros, poles, r=1.0, fill=False):
     """
-    Función que grafica el PZ map diagrama de polos y ceros.
+    Grafica el PZ map con un semicírculo de radio r en el semiplano izquierdo.
 
-    :param zeros: lista de ceros
-    :param poles: lista de polos
-
+    :param zeros: array-like de ceros (complejos)
+    :param poles: array-like de polos (complejos)
+    :param r: radio del semicírculo (default 1.0)
+    :param fill: si True, rellena el semicírculo con transparencia
     """
     plt.figure(figsize=(8, 6))
-    zeros_parte_real = np.real(zeros)
-    zeros_parte_imaginaria =  np.imag(zeros)
-    plt.scatter(zeros_parte_real,zeros_parte_imaginaria, marker='o', color='b')
 
-    poles_parte_real = np.real(poles)
-    poles_parte_imaginaria =  np.imag(poles)
-    plt.scatter(poles_parte_real,poles_parte_imaginaria, marker='x', color='b')
+    # Puntos (ceros azules 'o', polos rojos 'x')
+    plt.scatter(np.real(zeros), np.imag(zeros), marker='o', color='b', label='Ceros')
+    plt.scatter(np.real(poles), np.imag(poles), marker='x', color='r', label='Polos')
 
-    #Pueden cambiar este límite como quieram
-    plt.xlim([-1.6, 1.6])
+    # Ejes
+    plt.axhline(0, color='k', linewidth=0.8)
+    plt.axvline(0, color='k', linewidth=0.8)
 
-    plt.xlabel('$\\sigma$')
-    plt.ylabel('$j\\omega$')
+    # Semicírculo en el semiplano izquierdo: theta de +pi/2 a +3pi/2
+    theta = np.linspace(np.pi/2, 3*np.pi/2, 400)
+    x = r * np.cos(theta)
+    y = r * np.sin(theta)
+    plt.plot(x, y, 'g--', linewidth=1.5, label=f'Semicírculo r={r}')
 
-    plt.grid()
+    if fill:
+        # Relleno del semicírculo hacia la izquierda del eje imaginario
+        plt.fill_betweenx(y, x, 0, where=(x <= 0), color='g', alpha=0.12)
+
+    # Límites y aspecto
+    plt.xlim([-1.6, 1.6])              # como tenías
+    plt.ylim([-1.6, 1.6])              # para ver el semicírculo completo
+    ax = plt.gca()
+    ax.set_aspect('equal', adjustable='box')  # que el círculo no se deforme
+
+    plt.xlabel(r'$\sigma$')
+    plt.ylabel(r'$j\omega$')
+    plt.grid(True)
+    plt.legend(loc='best')
+    plt.title('Mapa de Polos y Ceros')
     plt.show()
 
 
@@ -194,15 +210,13 @@ def plot_bode(mag, w, phase, phase_units="deg", unwrap=True):
 
 
 
-
-
 # ---------- Estado 1 ----------
 def run():
     print("=== Estado 1: Ingreso de polinomio en x ===")
     print("Ejemplo: 3*x**2 - 2*x + 1")
     print("Notas: usá '**' para potencias, solo variable 'x' y operaciones +, -, *, **.\n")
 
-    x_np = np.linspace(-5, 5, 1000)
+    x_np = np.linspace(-5, 5, 10000)
 
     # Tolerancias
     RTOL = 1e-8
@@ -414,7 +428,7 @@ def run():
     #Define un sistema de scipy a través de los ceros, polos y ganancia
     tf = signal.ZerosPolesGain(zeros, poles, gain )
 
-    w_rad = np.linspace(0,2,100)
+    w_rad = np.linspace(0,3,10000)
 
     w_rad, mag, phase = signal.bode(tf, w = w_rad)
     mag_en_veces = 10**(mag/20)
