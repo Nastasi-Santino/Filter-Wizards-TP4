@@ -4,6 +4,15 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 import math
 
+# --- SymPy para polinomio Butterworth y pretty print ---
+import sympy as sp
+try:
+    from IPython.display import display
+    HAVE_DISPLAY = True
+except Exception:
+    HAVE_DISPLAY = False
+sp.init_printing(use_unicode=True)
+
 def _leer_float(prompt):
     while True:
         try:
@@ -65,6 +74,28 @@ def _leer_aproximacion():
             print("\nOperación cancelada por el usuario.")
             raise SystemExit(1)
 
+# ---------------- Tu función de polinomio Butterworth ----------------
+def get_butter_poly(n, show=False):
+    """
+    Devuelve el 'polinomio de butterworth' de orden n (según tu construcción).
+    Retorna (polinomio, símbolo)
+    """
+    x = sp.symbols('x')
+    C = [0] * (n + 1)  # lista de tamaño n+1
+    C[0] = 1           # orden 0
+
+    for z in range(1, len(C)):
+        C[z] = x**z
+        if show:
+            if HAVE_DISPLAY:
+                display(sp.Symbol(f'Orden {z}:'))
+                display(C[z])
+            else:
+                print(f"Orden {z}:")
+                sp.pprint(C[z])
+    return C[n], x
+# ---------------------------------------------------------------------
+
 def run():
     print("=== Estado 2: Parámetros y regiones (Y en dB, piso dinámico) ===")
     print("Condiciones: Gp > Ga y Wan > 1.")
@@ -101,7 +132,6 @@ def run():
             # Para cálculos en lineal
             Gp_lin = _db2lin(Gp_db)
             Ga_lin = _db2lin(Ga_db)
-
         break
 
     # --- Cálculo solicitado: xi2 = (1 / Gp^2) - 1 (usando Gp en lineal) ---
@@ -114,23 +144,29 @@ def run():
 
     # Si es Butterworth: n = ceil( ln((1/xi2)*(Ga^2 - 1)) / (2*ln(Wan)) )
     if opcion == 1:  # Butterworth
-        # Chequeos de dominio antes de log
         inner = (1.0 / xi2) * ((1/Ga_lin) ** 2 - 1.0)
         ok = True
         if xi2 <= 0:
-            print("No se puede calcular n: xi2 debe ser > 0 (revisá Gp).")
-            ok = False
+            print("No se puede calcular n: xi2 debe ser > 0 (revisá Gp)."); ok = False
         if inner <= 0:
-            print("No se puede calcular n: (1/xi2)*(Ga^2 - 1) debe ser > 0 (revisá Ga y Gp).")
-            ok = False
+            print("No se puede calcular n: (1/xi2)*(Ga^2 - 1) debe ser > 0 (revisá Ga y Gp)."); ok = False
         if Wan <= 1.0:
-            print("No se puede calcular n: Wan debe ser > 1.")
-            ok = False
+            print("No se puede calcular n: Wan debe ser > 1."); ok = False
 
         if ok:
             n_real = math.log(inner) / (2.0 * math.log(Wan))
             n = int(math.ceil(n_real))
+            if n < 1:
+                n = 1  # asegurar al menos orden 1
             print(f"Orden mínimo Butterworth: n = {n} (valor continuo: {n_real:.6f})")
+
+            # --- Construir el polinomio Butterworth de orden n y mostrarlo ---
+            f_poly, x_sym = get_butter_poly(n, show=False)
+            print("\nPolinomio Butterworth (según get_butter_poly) de orden n:")
+            if HAVE_DISPLAY:
+                display(sp.simplify(f_poly))
+            else:
+                sp.pprint(sp.simplify(f_poly))
 
     # --- Configuración del gráfico (en dB, piso dinámico) ---
     x_max = Wan * 1.5                      # X: 0 .. Wan + 0.5*Wan
