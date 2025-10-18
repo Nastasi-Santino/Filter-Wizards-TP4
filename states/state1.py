@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 from scipy import signal
+from utils.pz_tools import get_zeros_and_poles, plot_pz_map
 
 # ---------- SymPy para la expresión simbólica final ----------
 import sympy as sp
@@ -69,96 +70,6 @@ def _safe_inv_bounds(lo, hi, eps=1e-12):
     inv_lo = 1.0 / lo_c
     inv_hi = 1.0 / hi_c
     return (min(inv_lo, inv_hi), max(inv_lo, inv_hi))
-
-def get_zeros_and_poles(F):
-    """
-    Función que calcula los ceros y los polos de una función transferencia
-
-    :param F: función transferencia como expresión de sympy
-
-    :returns: ceros y polos de la función transferencias
-    """
-
-    #Obtenemos  el numerador y denominador de la expresión
-    num = sp.fraction(F)[0]
-    den = sp.fraction(F)[1]
-
-
-    #Obtenemos los coeficientes del numerador y denominador. Los ifs son para los casos donde el numerador o denominador son de orden 1.
-
-    #si es de orden 1
-    if not isinstance(num, sp.Poly):
-        num_coeffs = num
-    #Si es de orden mayor
-    else:
-        num_coeffs = sp.Poly(num).all_coeffs()
-
-    if not isinstance(den, sp.Poly):
-        den_coeffs = sp.Poly(den).all_coeffs()
-    else:
-        den_coeffs = den
-
-
-    #Para mejor manejo vamos a pasar estos coeficientes a un tipo de arreglo de numpy (confíen)
-    num_coeffs = np.array(num_coeffs, dtype = float)
-    den_coeffs = np.array(den_coeffs, dtype = float)
-
-
-
-    #Obtenemos las raíces de esos polinomios.
-    #Esto lo vamos a hacer a través de scipy, que tiene una función que a partir de los coeficientes del numerador y denominador, te da los polos y ceros
-
-    pz = signal.tf2zpk(num_coeffs,den_coeffs)
-
-    #pz es una arreglo [ceros, polos, ganancia]
-
-    zeros = pz[0]
-    poles = pz[1]
-
-    return zeros, poles
-
-def plot_pz_map(zeros, poles, r=1.0, fill=False):
-    """
-    Grafica el PZ map con un semicírculo de radio r en el semiplano izquierdo.
-
-    :param zeros: array-like de ceros (complejos)
-    :param poles: array-like de polos (complejos)
-    :param r: radio del semicírculo (default 1.0)
-    :param fill: si True, rellena el semicírculo con transparencia
-    """
-    plt.figure(figsize=(8, 6))
-
-    # Puntos (ceros azules 'o', polos rojos 'x')
-    plt.scatter(np.real(zeros), np.imag(zeros), marker='o', color='b', label='Ceros')
-    plt.scatter(np.real(poles), np.imag(poles), marker='x', color='r', label='Polos')
-
-    # Ejes
-    plt.axhline(0, color='k', linewidth=0.8)
-    plt.axvline(0, color='k', linewidth=0.8)
-
-    # Semicírculo en el semiplano izquierdo: theta de +pi/2 a +3pi/2
-    theta = np.linspace(np.pi/2, 3*np.pi/2, 400)
-    x = r * np.cos(theta)
-    y = r * np.sin(theta)
-    plt.plot(x, y, 'g--', linewidth=1.5, label=f'Semicírculo r={r}')
-
-    if fill:
-        # Relleno del semicírculo hacia la izquierda del eje imaginario
-        plt.fill_betweenx(y, x, 0, where=(x <= 0), color='g', alpha=0.12)
-
-    # Límites y aspecto
-    plt.xlim([-1.6, 1.6])              # como tenías
-    plt.ylim([-1.6, 1.6])              # para ver el semicírculo completo
-    ax = plt.gca()
-    ax.set_aspect('equal', adjustable='box')  # que el círculo no se deforme
-
-    plt.xlabel(r'$\sigma$')
-    plt.ylabel(r'$j\omega$')
-    plt.grid(True)
-    plt.legend(loc='best')
-    plt.title('Mapa de Polos y Ceros')
-    plt.show()
-
 
 def plot_bode(mag, w, phase, phase_units="deg", unwrap=True):
     """

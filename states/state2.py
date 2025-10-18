@@ -3,6 +3,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 import math
+from utils.pz_tools import get_zeros_and_poles, plot_pz_map
+from sympy.abc import xi , w, n, s
 
 # --- SymPy para polinomio Butterworth y pretty print ---
 import sympy as sp
@@ -96,6 +98,20 @@ def get_butter_poly(n, show=False):
     return C[n], x
 # ---------------------------------------------------------------------
 
+def eval_Hjw(w, zeros, poles, K=1.0):
+    """Evalúa H(jw) = K * Π (jw - z_i) / Π (jw - p_i) para un vector w (NumPy)."""
+    jw = 1j * w.astype(float)
+    num = np.ones_like(jw, dtype=complex)
+    den = np.ones_like(jw, dtype=complex)
+    # Ceros (podría ser array vacío)
+    for z in np.atleast_1d(zeros):
+        num *= (jw - z)
+    # Polos (usamos los 'útiles', típicamente los del semiplano izquierdo)
+    for p in np.atleast_1d(poles):
+        den *= (jw - p)
+    H = K * (num / den)
+    return H
+
 def run():
     print("=== Estado 2: Parámetros y regiones (Y en dB, piso dinámico) ===")
     print("Condiciones: Gp > Ga y Wan > 1.")
@@ -161,12 +177,19 @@ def run():
             print(f"Orden mínimo Butterworth: n = {n} (valor continuo: {n_real:.6f})")
 
             # --- Construir el polinomio Butterworth de orden n y mostrarlo ---
-            f_poly, x_sym = get_butter_poly(n, show=False)
+            f_poly, x = get_butter_poly(n, show=False)
             print("\nPolinomio Butterworth (según get_butter_poly) de orden n:")
             if HAVE_DISPLAY:
                 display(sp.simplify(f_poly))
             else:
                 sp.pprint(sp.simplify(f_poly))
+
+            # Construir G(s) simbólica: sustituimos x -> j*ω con ω≡s (porque s=jω en eje jω)
+            Fsym = f_poly.subs(x, sp.I*s)      # F(jω) con ω=s
+            Gs   = 1 / (xi2 * (Fsym**2) + 1)   # G(s) simbólica
+
+            zeros, poles = get_zeros_and_poles(Gs, var=s)  # ya que xi2 es numérico
+            useful_poles = [p for p in poles if np.real(p) < 0]
 
     # --- Configuración del gráfico (en dB, piso dinámico) ---
     x_max = Wan * 1.5                      # X: 0 .. Wan + 0.5*Wan
@@ -207,6 +230,28 @@ def run():
     ax.axhline(Ga_db, color='r', linewidth=0.8, linestyle='--', label='Ga (dB)')
     ax.axhline(0.0,   color='g', linewidth=0.8, linestyle='--', label='0 dB')
     ax.axhline(y_floor, color='m', linewidth=0.8, linestyle=':', label='Piso Ga−20 dB')
+
+    # Vector de frecuencias para trazar (mismo rango del gráfico)
+    w_curve = np.linspace(0.0, x_max, 2000)
+
+    # Elegimos una referencia para normalizar la ganancia: ω_ref = 1 rad/s
+    # Objetivo: |H(j*ω_ref)| = Gp_lin  (si preferís DC, cambialo a ω_ref=0)
+    omega_ref = 1.0
+    target_mag = Gp_lin
+
+    # Calcular K tal que |H(j*ω_ref)| = target_mag
+    H_ref = eval_Hjw(np.array([omega_ref]), zeros, np.array(useful_poles), K=1.0)[0]
+    K = (target_mag / (np.abs(H_ref) if np.abs(H_ref) > 0 else 1.0))
+
+    # Evaluar y graficar magnitud en dB
+    H_jw = eval_Hjw(w_curve, zeros, np.array(useful_poles), K=K)
+    mag_db = 20.0 * np.log10(np.clip(np.abs(H_jw), 1e-300, None))  # clip para evitar -inf
+
+    ax.plot(w_curve, mag_db, linewidth=1.8, label='|H(jω)| desde ceros/polos')
+
+    # Reafirmar límites
+    ax.set_xlim(0.0, x_max)
+    ax.set_ylim(y_floor, y_top)
 
     # Leyenda (evita duplicados)
     handles, labels = ax.get_legend_handles_labels()
