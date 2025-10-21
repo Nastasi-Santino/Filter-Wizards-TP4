@@ -127,3 +127,32 @@ def plot_pz_map(zeros, poles, r=1.0, fill=False):
     plt.legend(loc='best')
     plt.title('Mapa de Polos y Ceros')
     plt.show()
+
+
+
+
+
+
+
+def reverse_bessel_poly(n: int, var=None):
+    """
+    Devuelve (Theta_n(s), s), el polinomio de Bessel 'reverso' de orden n.
+    Recurrencia:
+        Θ_0(s) = 1
+        Θ_1(s) = s + 1
+        Θ_{m+1}(s) = (2m+1) * s * Θ_m(s) + Θ_{m-1}(s),   m >= 1
+    """
+    if var is None:
+        var = s
+
+    if n <= 0:
+        return sp.Integer(1), var
+    if n == 1:
+        return var + 1, var
+
+    theta_prev2 = sp.Integer(1)    # Θ_0
+    theta_prev1 = var + 1          # Θ_1
+    for m in range(1, n):          # genera Θ_2 ... Θ_n
+        theta = (2*m + 1) * var * theta_prev1 + theta_prev2
+        theta_prev2, theta_prev1 = theta_prev1, sp.expand(theta)
+    return theta_prev1, var

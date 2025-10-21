@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 import math
-from utils.pz_tools import get_zeros_and_poles, plot_pz_map
+from utils.pz_tools import get_zeros_and_poles, plot_pz_map, reverse_bessel_poly
 from sympy.abc import xi , w, n, s
 
 # --- SymPy para polinomio Butterworth y pretty print ---
@@ -54,7 +54,7 @@ def _db2lin(db):
 
 def _leer_aproximacion():
     """
-    Muestra un menú con 5 aproximaciones y devuelve (opcion, nombre).
+    Muestra un menú con 6 aproximaciones y devuelve (opcion, nombre).
     """
     opciones = {
         1: "Butterworth",
@@ -62,19 +62,31 @@ def _leer_aproximacion():
         3: "Chebyshev II",
         4: "Elíptica (Cauer)",
         5: "Bessel (Thomson)",
+        6: "Legendre (Óptimo-L)"
     }
     print("\nElegí una aproximación:")
     for k, v in opciones.items():
         print(f"  {k}) {v}")
     while True:
         try:
-            op = int(_leer_float("Opción [1-5] = "))
+            op = int(_leer_float("Opción [1-6] = "))
             if op in opciones:
                 return op, opciones[op]
-            print("Elegí un número entre 1 y 5.")
+            print("Elegí un número entre 1 y 6.")
         except (KeyboardInterrupt, EOFError):
             print("\nOperación cancelada por el usuario.")
             raise SystemExit(1)
+
+
+# --- Menú de aproximaciones ---
+opcion, nombre_aprox = _leer_aproximacion()
+print(f"\nAproximación seleccionada: {opcion}) {nombre_aprox}")
+
+# Inicializar contenedores (evita UnboundLocalError si no hay asignación en alguna rama)
+zeros = np.array([], dtype=complex)
+useful_poles = np.array([], dtype=complex)
+
+
 
 # ---------------- Tu función de polinomio Butterworth ----------------
 def get_butter_poly(n, show=False):
@@ -190,6 +202,236 @@ def run():
 
             zeros, poles = get_zeros_and_poles(Gs, var=s)  # ya que xi2 es numérico
             useful_poles = [p for p in poles if np.real(p) < 0]
+
+
+
+    elif opcion == 2:  # Chebyshev I
+    # ε^2 desde Gp lineal
+        if xi2 <= 0:
+            print("No se puede calcular n: xi2 (ε^2) debe ser > 0 (revisá Gp).")
+        elif Wan <= 1.0:
+            print("No se puede calcular n: Wan debe ser > 1.")
+        else:
+            eps = math.sqrt(xi2)
+
+            # Orden mínimo Chebyshev I:
+            # n = ceil( acosh( sqrt((1/Ga^2) - 1) / ε ) / acosh(Wan) )
+            num_arg = math.sqrt(max((1.0 / (Ga_lin**2)) - 1.0, 0.0))
+            ratio = num_arg / eps
+            if ratio <= 1.0:
+                n = 1
+                n_real = 1.0
+                print("Advertencia: sqrt((1/Ga^2)-1)/ε ≤ 1 → se toma n=1.")
+            else:
+                try:
+                    n_real = math.acosh(ratio) / math.acosh(Wan)
+                except ValueError as e:
+                    print(f"No se puede calcular n (acosh dominio inválido): {e}")
+                    n_real = 1.0
+                n = max(1, int(math.ceil(n_real)))
+
+            print(f"Orden mínimo Chebyshev I: n = {n} (valor continuo: {n_real:.6f})")
+
+            # Construcción simbólica de G(s):
+            # |H(jω)|^2 = 1 / (1 + ε^2 T_n(ω)^2)  ⇒ G(s) = 1 / (1 + ε^2 T_n(s/i)^2)
+            Tn_w = sp.chebyshevt(n, w)           # T_n(w)
+            Fsym = Tn_w.subs(w, s / sp.I)        # T_n(s/i)
+            Gs   = 1 / (1 + (eps**2) * (Fsym**2))
+
+            # Ceros y polos con tu helper
+            z_, p_ = get_zeros_and_poles(Gs, var=s)
+
+            # Convertir a arrays de numpy (pueden venir como listas de SymPy)
+            zeros = np.array(z_, dtype=complex) if len(z_) else np.array([], dtype=complex)
+            poles = np.array(p_, dtype=complex) if len(p_) else np.array([], dtype=complex)
+
+            # Polos útiles: semiplano izquierdo
+            useful_poles = np.array([p for p in poles if np.real(p) < 0], dtype=complex)
+
+            if useful_poles.size == 0:
+                print("Aviso: no se obtuvieron polos en LHP con la construcción simbólica de Chebyshev I.")
+
+
+
+    elif opcion == 3:  # Chebyshev II (inverse Chebyshev) — prototipo LP
+    # Parámetro de rizado en STOPBAND desde Ga (lineal):
+    #   Ga^2 = eps_s^2 / (1 + eps_s^2)  =>  eps_s^2 = Ga^2 / (1 - Ga^2)
+        denom  = max(1e-15, 1.0 - Ga_lin**2)
+        eps_s2 = (Ga_lin**2) / denom
+        eps_s  = math.sqrt(eps_s2)
+
+        if Wan <= 1.0:
+            print("No se puede calcular n: Wan debe ser > 1.")
+        else:
+            # Orden mínimo:
+            #   cosh(n acosh(Wan)) >= (1/eps_s) * sqrt(1/Gp^2 - 1)
+            #   => n = ceil( acosh( (1/eps_s)*sqrt(1/Gp^2-1) ) / acosh(Wan) )
+            rhs = (1.0/eps_s) * math.sqrt(max(1.0/(Gp_lin**2) - 1.0, 0.0))
+            if rhs <= 1.0:
+                n = 1
+                n_real = 1.0
+                print("Advertencia: (1/ε_s)*sqrt(1/Gp^2-1) ≤ 1 → se toma n=1.")
+            else:
+                try:
+                    n_real = math.acosh(rhs) / math.acosh(Wan)
+                except ValueError as e:
+                    print(f"No se puede calcular n (acosh dominio inválido): {e}")
+                    n_real = 1.0
+                n = max(1, int(math.ceil(n_real)))
+
+            print(f"Orden mínimo Chebyshev II: n = {n} (valor continuo: {n_real:.6f})")
+
+            # ---------- Construcción simbólica robusta ----------
+            # Usamos directamente T_n(i*Wan/s)
+            Tn_is_over_s = sp.chebyshevt(n, sp.I*Wan/s)  # T_n(i*Wan/s)
+            Gs_raw = (eps_s2 * (Tn_is_over_s**2)) / (1 + eps_s2 * (Tn_is_over_s**2))
+
+            # Forzar fracción racional en s para que el helper pueda factorizar
+            Gs = sp.simplify(sp.together(Gs_raw))
+
+            # Ceros y polos por tu helper
+            z_sym, p_sym = get_zeros_and_poles(Gs, var=s)
+
+            zeros = np.array(z_sym, dtype=complex) if len(z_sym) else np.array([], dtype=complex)
+            poles = np.array(p_sym, dtype=complex) if len(p_sym) else np.array([], dtype=complex)
+
+            # Polos útiles en LHP
+            useful_poles = np.array([p for p in poles if np.real(p) < 0], dtype=complex)
+
+            # --- Parche: si no vinieron ceros, agregamos los ceros teóricos en jω (stopband) ---
+            if zeros.size == 0:
+                k    = np.arange(1, n + 1, dtype=float)
+                ang  = (2.0*k - 1.0) * np.pi / (2.0*n)
+                c    = np.cos(ang)
+                mask = np.abs(c) > 1e-9  # evita cos≈0 (cero en ∞)
+                w_z  = Wan / c[mask]
+                zeros_theoretical = []
+                for wz in w_z:
+                    zeros_theoretical.append(1j * wz)
+                    zeros_theoretical.append(-1j * wz)
+                zeros = np.array(zeros_theoretical, dtype=complex)
+
+            curve_label = f"|H(jω)| Chebyshev II (n={n})"
+
+            # Debug opcional:
+            # print(f"[cheb2] zeros={len(zeros)}, poles={len(useful_poles)}; eps_s2={eps_s2:.3e}")
+
+
+
+
+
+
+
+
+    elif opcion == 5:  # Bessel (Thomson) — SOLO plantilla pasabajos
+        N_MAX = 20
+        elegido = None
+        zeros_chosen = None
+        poles_chosen = None
+
+        # Chequeo de plantilla LP: PB=[0,1], SB=[Wan, 1.5*Wan]
+        for n_try in range(1, N_MAX + 1):
+            try:
+                theta_n, _ = reverse_bessel_poly(n_try, var=s)
+                Gs = 1 / theta_n   # Prototipo Bessel: H(s) = 1/Θ_n(s). H(0)=1.
+
+                z_sym, p_sym = get_zeros_and_poles(Gs, var=s)
+                z_arr = np.array(z_sym, dtype=complex) if len(z_sym) else np.array([], dtype=complex)
+                p_arr = np.array(p_sym, dtype=complex) if len(p_sym) else np.array([], dtype=complex)
+                poles_lhp = np.array([p for p in p_arr if np.real(p) < 0], dtype=complex)
+                if poles_lhp.size == 0:
+                    continue  # sin polos útiles → siguiente orden
+
+                # Evaluación plantilla (K=1, Bessel ya tiene H(0)=1):
+                w_pass = np.linspace(0.0, 1.0, 400)            # pasabajos
+                w_stop = np.linspace(Wan, Wan*1.5, 400)        # atenuación
+
+                H_pass = eval_Hjw(w_pass, z_arr, poles_lhp, K=1.0)
+                H_stop = eval_Hjw(w_stop, z_arr, poles_lhp, K=1.0)
+
+                min_pass = float(np.min(np.abs(H_pass))) if H_pass.size else 0.0
+                max_stop = float(np.max(np.abs(H_stop))) if H_stop.size else 1.0
+
+                # Plantilla LP: |H| >= Gp_lin en PB y |H| <= Ga_lin en SB
+                if (min_pass >= Gp_lin) and (max_stop <= Ga_lin):
+                    elegido = n_try
+                    zeros_chosen = z_arr
+                    poles_chosen = poles_lhp
+                    print(f"Orden Bessel elegido por plantilla: n = {elegido}")
+                    break
+            except Exception as e:
+                print(f"[Bessel n={n_try}] aviso: {e}")
+
+        if elegido is None:
+            # Ninguno cumple → usar n=15 y graficar igual
+            print(f"Ningún orden 1..{N_MAX} cumple la plantilla. Se grafica con n={N_MAX}.")
+            theta_n, _ = reverse_bessel_poly(N_MAX, var=s)
+            Gs = 1 / theta_n
+            z_sym, p_sym = get_zeros_and_poles(Gs, var=s)
+            zeros_chosen = np.array(z_sym, dtype=complex) if len(z_sym) else np.array([], dtype=complex)
+            p_arr = np.array(p_sym, dtype=complex) if len(p_sym) else np.array([], dtype=complex)
+            poles_chosen = np.array([p for p in p_arr if np.real(p) < 0], dtype=complex)
+
+        # Dejar listos para el ploteo final (tu lógica no cambia)
+        zeros = zeros_chosen if zeros_chosen is not None else np.array([], dtype=complex)
+        useful_poles = poles_chosen if poles_chosen is not None else np.array([], dtype=complex)
+
+
+    elif opcion == 6:  # Legendre (Óptimo L) — sin orden máximo
+        # Iteramos n = 1, 2, 3, ... hasta cumplir plantilla PB/SB
+        n_try = 1
+        while True:
+            # P_n(w) y sustitución w -> s/i
+            Pn_w = sp.legendre(n_try, w)      # polinomio de Legendre de orden n_try
+            Fsym = Pn_w.subs(w, s / sp.I)     # P_n(s/i)
+
+            # Prototipo (análogamente a Chebyshev I): |H|^2 = 1 / (1 + xi2 * P_n^2)
+            Gs = 1 / (1 + xi2 * (Fsym**2))
+
+            # Polos/ceros con tu helper
+            z_sym, p_sym = get_zeros_and_poles(Gs, var=s)
+            z_arr = np.array(z_sym, dtype=complex) if len(z_sym) else np.array([], dtype=complex)
+            p_arr = np.array(p_sym, dtype=complex) if len(p_sym) else np.array([], dtype=complex)
+
+            # Filtramos polos en LHP (útiles)
+            poles_lhp = np.array([p for p in p_arr if np.real(p) < 0], dtype=complex)
+
+            # Si no hay polos útiles, probamos con el siguiente orden
+            if poles_lhp.size == 0:
+                n_try += 1
+                continue
+
+            # Normalización como en tu ploteo final: |H(j*1)| = Gp_lin
+            omega_ref = 1.0
+            H_ref = eval_Hjw(np.array([omega_ref]), z_arr, poles_lhp, K=1.0)[0]
+            K = Gp_lin / (abs(H_ref) if abs(H_ref) > 0 else 1.0)
+
+            # Chequeo de plantilla SOLO pasabajos:
+            #   PB: w ∈ [0, 1]      ⇒ |H| >= Gp_lin
+            #   SB: w ∈ [Wan, 1.5*Wan] ⇒ |H| <= Ga_lin
+            w_pass = np.linspace(0.0, 1.0, 400)
+            w_stop = np.linspace(Wan, Wan*1.5, 400)
+
+            H_pass = eval_Hjw(w_pass, z_arr, poles_lhp, K=K)
+            H_stop = eval_Hjw(w_stop, z_arr, poles_lhp, K=K)
+
+            cond_pb = (np.min(np.abs(H_pass)) >= Gp_lin) if H_pass.size else False
+            cond_sb = (np.max(np.abs(H_stop)) <= Ga_lin) if H_stop.size else False
+
+            if cond_pb and cond_sb:
+                print(f"Orden Legendre elegido por plantilla: n = {n_try}")
+                zeros = z_arr
+                useful_poles = poles_lhp
+                curve_label = f"|H(jω)| Legendre (n={n_try})"
+                break
+
+            # Si no cumple, incrementamos orden y seguimos
+            n_try += 1
+
+
+
+
+
 
     # --- Configuración del gráfico (en dB, piso dinámico) ---
     x_max = Wan * 1.5                      # X: 0 .. Wan + 0.5*Wan
