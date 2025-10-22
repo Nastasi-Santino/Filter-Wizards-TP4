@@ -186,9 +186,11 @@ def design_lp_prototype(Gp_lin, Ga_lin, Wan, opcion):
         Gs   = 1 / (xi2 * (Fsym**2) + 1)
 
         z_sym, p_sym = get_zeros_and_poles(Gs, var=s)
-        zeros = np.array(z_sym, dtype=complex) if z_sym else np.array([], dtype=complex)
-        poles = np.array(p_sym, dtype=complex) if p_sym else np.array([], dtype=complex)
+
+        zeros = np.array(z_sym, dtype=complex) if hasattr(z_sym, '__len__') and len(z_sym) > 0 else np.array([], dtype=complex)
+        poles = np.array(p_sym, dtype=complex) if hasattr(p_sym, '__len__') and len(p_sym) > 0 else np.array([], dtype=complex)
         useful_poles = np.array([p for p in poles if np.real(p) < 0], dtype=complex)
+
         label = f"|H(jΩ)| Butterworth (n={n})"
 
     elif opcion == 2:  # Chebyshev I
@@ -209,9 +211,11 @@ def design_lp_prototype(Gp_lin, Ga_lin, Wan, opcion):
         Gs   = sp.simplify(sp.together(Gs))
 
         z_sym, p_sym = get_zeros_and_poles(Gs, var=s)
-        zeros = np.array(z_sym, dtype=complex) if z_sym else np.array([], dtype=complex)
-        poles = np.array(p_sym, dtype=complex) if p_sym else np.array([], dtype=complex)
+
+        zeros = np.array(z_sym, dtype=complex) if hasattr(z_sym, '__len__') and len(z_sym) > 0 else np.array([], dtype=complex)
+        poles = np.array(p_sym, dtype=complex) if hasattr(p_sym, '__len__') and len(p_sym) > 0 else np.array([], dtype=complex)
         useful_poles = np.array([p for p in poles if np.real(p) < 0], dtype=complex)
+
         label = f"|H(jΩ)| Chebyshev I (n={n})"
 
     elif opcion == 3:  # Chebyshev II (inverso)
@@ -234,8 +238,8 @@ def design_lp_prototype(Gp_lin, Ga_lin, Wan, opcion):
 
         z_sym, p_sym = get_zeros_and_poles(Gs, var=s)
 
-        zeros = np.array(z_sym, dtype=complex) if z_sym else np.array([], dtype=complex)
-        poles = np.array(p_sym, dtype=complex) if p_sym else np.array([], dtype=complex)
+        zeros = np.array(z_sym, dtype=complex) if hasattr(z_sym, '__len__') and len(z_sym) > 0 else np.array([], dtype=complex)
+        poles = np.array(p_sym, dtype=complex) if hasattr(p_sym, '__len__') and len(p_sym) > 0 else np.array([], dtype=complex)
         useful_poles = np.array([p for p in poles if np.real(p) < 0], dtype=complex)
 
         # Parche: si no vinieron ceros, agregamos ceros teóricos en stopband
@@ -255,7 +259,9 @@ def design_lp_prototype(Gp_lin, Ga_lin, Wan, opcion):
 
     else:
         label = "Aprox no implementada"
+
     return zeros, useful_poles, label
+
 
 # ------------------------- Mapas de frecuencia Ω(ω) -------------------------
 def omega_map(omega, spec: NormalizedSpec):
@@ -374,78 +380,111 @@ def run():
         print("Aviso: no se obtuvieron polos en LHP; no se puede trazar la curva.")
         return
 
-    # ---- Desnormalización por mapeo de frecuencia ----
+    # ==== Evaluación robusta y ploteo del filtro desnormalizado ====
+
+    # ---- Rango ω y mapeo Ω(ω) con κ ----
     w_min, w_max = xrange_for_plot(spec)
-    w_real = np.linspace(w_min, w_max, 3000)
+    # Evitemos ω=0 en HP/BP/BS para no disparar singularidades del mapeo
+    w_lo = max(w_min, 1e-3 if spec.tipo in ('HP', 'BP', 'BS') else 0.0)
+    w_real = np.linspace(w_lo, w_max, 3000)
+
     Omega  = omega_map(w_real, spec)
+    Omega_eff = spec.kappa * Omega
 
-    # Normalización de ganancia en Ω=1 (|H| = Gp_lin), igual que state2
-    H_ref = eval_Hjw(np.array([1.0]), zeros, useful_poles, K=1.0)[0]
-    K = spec.Gp_lin / (np.abs(H_ref) if np.abs(H_ref) > 0 else 1.0)
+    # ---- Normalización robusta de ganancia (|H|≈Gp_lin en Ω~1) ----
+    Omega_ref = np.linspace(0.9, 1.1, 41)            # ventanita alrededor de Ω=1
+    H_ref_vec = eval_Hjw(Omega_ref, zeros, useful_poles, K=1.0)
+    H_ref_mag = np.abs(H_ref_vec)
+    H_ref_mag = H_ref_mag[np.isfinite(H_ref_mag) & (H_ref_mag > 0)]
+    if H_ref_mag.size == 0:
+        # fallback: un solo punto en Ω=1
+        H_ref = eval_Hjw(np.array([1.0]), zeros, useful_poles, K=1.0)[0]
+        denom = (np.abs(H_ref) if np.isfinite(H_ref) and np.abs(H_ref) > 0 else 1.0)
+        K = spec.Gp_lin / denom
+    else:
+        K = spec.Gp_lin / np.median(H_ref_mag)
 
-    H_proto = eval_Hjw(Omega, zeros, useful_poles, K=K)
-    mag_db  = 20.0 * np.log10(np.clip(np.abs(H_proto), 1e-300, None))
+    # ---- Curva |H(jΩ(ω))|
+    H_proto = eval_Hjw(Omega_eff, zeros, useful_poles, K=K)
+    mag = np.abs(H_proto)
+    # recorte numérico para evitar -inf y outliers absurdos
+    mag = np.clip(mag, 10**(-120/20), 10**(10/20))
+    mag_db = 20.0 * np.log10(mag)
 
     # ---- Plot en ω real con plantilla desnormalizada ----
     plt.ion()
-    fig, ax = plt.subplots(figsize=(7,5))
+    fig, ax = plt.subplots(figsize=(7, 5))
 
-    # Regiones de plantilla (en dB)
+    # Regiones de plantilla (PB/SB)
     if spec.tipo == 'LP':
         wp, wa = spec.extra['wp'], spec.extra['wa']
-        ax.add_patch(Rectangle((0.0, min(spec.Gp_db, 0.0)), wp, 0.0-min(spec.Gp_db, 0.0),
-                               facecolor='red', alpha=0.18, label='PB'))
-        ax.add_patch(Rectangle((wa, spec.Ga_db), w_max - wa, 0.0 - spec.Ga_db,
-                               facecolor='red', alpha=0.18, label='SB'))
-        ax.axvline(wp, color='k', ls='--', lw=0.8); ax.axvline(wa, color='k', ls='--', lw=0.8)
+        ax.add_patch(Rectangle((0.0, spec.Ga_db), wa, 0.0 - spec.Ga_db,
+                               facecolor='red', alpha=0.15, label='SB'))
+        ax.add_patch(Rectangle((0.0, min(spec.Gp_db, 0.0)), wp, 0.0 - min(spec.Gp_db, 0.0),
+                               facecolor='green', alpha=0.10, label='PB'))
+        ax.axvline(wp, color='k', ls='--', lw=0.8)
+        ax.axvline(wa, color='k', ls='--', lw=0.8)
 
     elif spec.tipo == 'HP':
         wp, wa = spec.extra['wp'], spec.extra['wa']
-        ax.add_patch(Rectangle((wp, min(spec.Gp_db, 0.0)), w_max - wp, 0.0-min(spec.Gp_db, 0.0),
-                               facecolor='red', alpha=0.18, label='PB'))
-        ax.add_patch(Rectangle((0.0, spec.Ga_db), wa - 0.0, 0.0 - spec.Ga_db,
-                               facecolor='red', alpha=0.18, label='SB'))
-        ax.axvline(wp, color='k', ls='--', lw=0.8); ax.axvline(wa, color='k', ls='--', lw=0.8)
+        ax.add_patch(Rectangle((0.0, spec.Ga_db), wa, 0.0 - spec.Ga_db,
+                               facecolor='red', alpha=0.15, label='SB'))
+        ax.add_patch(Rectangle((wp, min(spec.Gp_db, 0.0)), w_max - wp, 0.0 - min(spec.Gp_db, 0.0),
+                               facecolor='green', alpha=0.10, label='PB'))
+        ax.axvline(wp, color='k', ls='--', lw=0.8)
+        ax.axvline(wa, color='k', ls='--', lw=0.8)
 
     elif spec.tipo == 'BP':
-        wp1, wp2 = spec.extra['wp1'], spec.extra['wp2']
-        wa1, wa2 = spec.extra['wa1'], spec.extra['wa2']
-        ax.add_patch(Rectangle((wp1, min(spec.Gp_db, 0.0)), wp2-wp1, 0.0-min(spec.Gp_db, 0.0),
-                               facecolor='red', alpha=0.18, label='PB'))
-        ax.add_patch(Rectangle((0.0, spec.Ga_db), wa1 - 0.0, 0.0 - spec.Ga_db,
-                               facecolor='red', alpha=0.18, label='SB'))
-        ax.add_patch(Rectangle((wa2, spec.Ga_db), w_max - wa2, 0.0 - spec.Ga_db,
-                               facecolor='red', alpha=0.18))
-        ax.axvline(wp1, color='k', ls='--', lw=0.8); ax.axvline(wp2, color='k', ls='--', lw=0.8)
-        ax.axvline(wa1, color='k', ls=':',  lw=0.8); ax.axvline(wa2, color='k', ls=':',  lw=0.8)
+        wp1, wp2, wa1, wa2 = spec.extra['wp1'], spec.extra['wp2'], spec.extra['wa1'], spec.extra['wa2']
+        ax.add_patch(Rectangle((wa1, spec.Ga_db), wa2 - wa1, 0.0 - spec.Ga_db,
+                               facecolor='red', alpha=0.15, label='SB'))
+        ax.add_patch(Rectangle((wp1, min(spec.Gp_db, 0.0)), wp2 - wp1, 0.0 - min(spec.Gp_db, 0.0),
+                               facecolor='green', alpha=0.10, label='PB'))
+        for v in (wp1, wp2, wa1, wa2):
+            ax.axvline(v, color='k', ls='--', lw=0.8)
 
     elif spec.tipo == 'BS':
-        wp1, wp2 = spec.extra['wp1'], spec.extra['wp2']
-        wa1, wa2 = spec.extra['wa1'], spec.extra['wa2']
-        ax.add_patch(Rectangle((0.0, min(spec.Gp_db, 0.0)), wp1 - 0.0, 0.0-min(spec.Gp_db, 0.0),
-                               facecolor='red', alpha=0.18, label='PB'))
-        ax.add_patch(Rectangle((wp2, min(spec.Gp_db, 0.0)), w_max - wp2, 0.0-min(spec.Gp_db, 0.0),
-                               facecolor='red', alpha=0.18))
+        wp1, wp2, wa1, wa2 = spec.extra['wp1'], spec.extra['wp2'], spec.extra['wa1'], spec.extra['wa2']
         ax.add_patch(Rectangle((wa1, spec.Ga_db), wa2 - wa1, 0.0 - spec.Ga_db,
-                               facecolor='red', alpha=0.18, label='SB'))
-        ax.axvline(wp1, color='k', ls='--', lw=0.8); ax.axvline(wp2, color='k', ls='--', lw=0.8)
-        ax.axvline(wa1, color='k', ls=':',  lw=0.8); ax.axvline(wa2, color='k', ls=':',  lw=0.8)
+                               facecolor='red', alpha=0.15, label='SB'))
+        ax.add_patch(Rectangle((0.0, min(spec.Gp_db, 0.0)), wp1, 0.0 - min(spec.Gp_db, 0.0),
+                               facecolor='green', alpha=0.10, label='PB'))
+        ax.add_patch(Rectangle((wp2, min(spec.Gp_db, 0.0)), w_max - wp2, 0.0 - min(spec.Gp_db, 0.0),
+                               facecolor='green', alpha=0.10))
+        for v in (wp1, wp2, wa1, wa2):
+            ax.axvline(v, color='k', ls='--', lw=0.8)
 
-    # Curva
+    # Curva del filtro
     ax.plot(w_real, mag_db, lw=1.8, label=f'{curve_label} (desnormalizado)')
 
-    # Autoscale Y robusto
+    # X logarítmico para HP/BP/BS
+    usar_logx = spec.tipo in ('HP', 'BP', 'BS')
+    if usar_logx:
+        ax.set_xscale('log')
+        ax.set_xlim(max(1e-3, w_lo), w_max * 1.1)
+    else:
+        ax.set_xlim(0.0, w_max * 1.1)
+
+    # Y: autoscale robusto y “sensato”
     finite = np.isfinite(mag_db)
     if np.any(finite):
-        ymin = min(spec.Ga_db - 20.0, float(np.min(mag_db[finite])) - 3.0)
-        ymax = max(0.0,            float(np.max(mag_db[finite])) + 1.0)
-        if ymax - ymin < 5.0:
-            ymin -= 2.5; ymax += 2.5
+        q_lo = float(np.quantile(mag_db[finite], 0.02))
+        q_hi = float(np.quantile(mag_db[finite], 0.98))
+        ymin = min(spec.Ga_db - 20.0, q_lo - 3.0, float(np.min(mag_db[finite])) - 3.0)
+        ymax = max(3.0, q_hi + 1.0, float(np.max(mag_db[finite])) + 1.0)
+        # Límites razonables
+        ymin = max(ymin, spec.Ga_db - 60.0)  # no más de 60 dB por debajo de Ga
+        ymax = min(ymax, 6.0)                # techo +6 dB
+        if ymax - ymin < 10.0:
+            mid = 0.5 * (ymax + ymin)
+            ymin = mid - 5.0
+            ymax = mid + 5.0
     else:
-        ymin, ymax = spec.Ga_db - 20.0, 0.0
+        ymin, ymax = spec.Ga_db - 40.0, 3.0
 
-    ax.set_xlim(0.0, w_max)
     ax.set_ylim(ymin, ymax)
+
+    # Estética
     ax.grid(True, which='both', linestyle=':')
     ax.set_xlabel(r'$\omega$ [rad/s]')
     ax.set_ylabel('Amplitud [dB]')
