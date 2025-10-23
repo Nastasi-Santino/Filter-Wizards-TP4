@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 import math
-from utils.pz_tools import get_zeros_and_poles, plot_pz_map, reverse_bessel_poly
+from utils.pz_tools import get_zeros_and_poles, plot_pz_map, reverse_bessel_poly, design_legendre_papoulis_lp
 from sympy.abc import xi , w, n, s
 
 # --- SymPy para polinomio Butterworth y pretty print ---
@@ -320,9 +320,6 @@ def run():
 
 
 
-
-
-
     elif opcion == 5:  # Bessel (Thomson) — SOLO plantilla pasabajos
         N_MAX = 20
         elegido = None
@@ -377,56 +374,19 @@ def run():
         useful_poles = poles_chosen if poles_chosen is not None else np.array([], dtype=complex)
 
 
-    elif opcion == 6:  # Legendre (Óptimo L) — sin orden máximo
-        # Iteramos n = 1, 2, 3, ... hasta cumplir plantilla PB/SB
-        n_try = 1
-        while True:
-            # P_n(w) y sustitución w -> s/i
-            Pn_w = sp.legendre(n_try, w)      # polinomio de Legendre de orden n_try
-            Fsym = Pn_w.subs(w, s / sp.I)     # P_n(s/i)
-
-            # Prototipo (análogamente a Chebyshev I): |H|^2 = 1 / (1 + xi2 * P_n^2)
-            Gs = 1 / (1 + xi2 * (Fsym**2))
-
-            # Polos/ceros con tu helper
-            z_sym, p_sym = get_zeros_and_poles(Gs, var=s)
-            z_arr = np.array(z_sym, dtype=complex) if len(z_sym) else np.array([], dtype=complex)
-            p_arr = np.array(p_sym, dtype=complex) if len(p_sym) else np.array([], dtype=complex)
-
-            # Filtramos polos en LHP (útiles)
-            poles_lhp = np.array([p for p in p_arr if np.real(p) < 0], dtype=complex)
-
-            # Si no hay polos útiles, probamos con el siguiente orden
-            if poles_lhp.size == 0:
-                n_try += 1
-                continue
-
-            # Normalización como en tu ploteo final: |H(j*1)| = Gp_lin
-            omega_ref = 1.0
-            H_ref = eval_Hjw(np.array([omega_ref]), z_arr, poles_lhp, K=1.0)[0]
-            K = Gp_lin / (abs(H_ref) if abs(H_ref) > 0 else 1.0)
-
-            # Chequeo de plantilla SOLO pasabajos:
-            #   PB: w ∈ [0, 1]      ⇒ |H| >= Gp_lin
-            #   SB: w ∈ [Wan, 1.5*Wan] ⇒ |H| <= Ga_lin
-            w_pass = np.linspace(0.0, 1.0, 400)
-            w_stop = np.linspace(Wan, Wan*1.5, 400)
-
-            H_pass = eval_Hjw(w_pass, z_arr, poles_lhp, K=K)
-            H_stop = eval_Hjw(w_stop, z_arr, poles_lhp, K=K)
-
-            cond_pb = (np.min(np.abs(H_pass)) >= Gp_lin) if H_pass.size else False
-            cond_sb = (np.max(np.abs(H_stop)) <= Ga_lin) if H_stop.size else False
-
-            if cond_pb and cond_sb:
-                print(f"Orden Legendre elegido por plantilla: n = {n_try}")
-                zeros = z_arr
-                useful_poles = poles_lhp
-                curve_label = f"|H(jω)| Legendre (n={n_try})"
-                break
-
-            # Si no cumple, incrementamos orden y seguimos
-            n_try += 1
+    elif opcion == 6:  # Legendre (Óptimo-L, Papoulis)
+        try:
+            zeros, useful_poles, curve_label, n_leg = design_legendre_papoulis_lp(
+                Gp_lin, Ga_lin, Wan,
+                get_zeros_and_poles=get_zeros_and_poles,
+                n_max=30, show=False
+            )
+            print(f"Legendre-Papoulis: orden n = {n_leg}")
+        except ValueError as e:
+            print(f"No se pudo diseñar Legendre-Papoulis: {e}")
+            zeros = np.array([], dtype=complex)
+            useful_poles = np.array([], dtype=complex)
+            curve_label = "Legendre-Papoulis (inválido)"
 
 
 

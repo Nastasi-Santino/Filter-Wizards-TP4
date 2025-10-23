@@ -1,6 +1,8 @@
 # utils/pz_tools.py
 import numpy as np
 import sympy as sp
+from sympy.abc import s, w
+
 
 try:
     from scipy import signal
@@ -156,3 +158,63 @@ def reverse_bessel_poly(n: int, var=None):
         theta = (2*m + 1) * var * theta_prev1 + theta_prev2
         theta_prev2, theta_prev1 = theta_prev1, sp.expand(theta)
     return theta_prev1, var
+
+
+
+# --- Legendre (Óptimo-L): diseño de prototipo LP normalizado ---
+
+def design_legendre_papoulis_lp(Gp_lin, Ga_lin, Wan, get_zeros_and_poles, n_max=30, show=False):
+    """
+    Prototipo LP normalizado sin rizado en PB:
+      |H|^2 = 1 / (1 + eps^2 * Lhat_n(Ω)^2),
+      eps^2 = 1/Gp^2 - 1,
+      Lhat_n(Ω) = ( ∫_0^Ω P_n(x) dx ) / ( ∫_0^1 P_n(x) dx )
+
+    Devuelve: zeros, useful_poles, label, n
+    """
+    if Wan <= 1.0:
+        raise ValueError("Legendre-Papoulis: Wan debe ser > 1 (prototipo LP).")
+    eps2 = (1.0 / (Gp_lin**2)) - 1.0
+    if eps2 <= 0:
+        raise ValueError("Legendre-Papoulis: Gp debe ser < 1 (lineal).")
+
+    target = Ga_lin**2
+    n_found = None
+
+    for n_try in range(1, n_max+1):
+        Pn  = sp.legendre(n_try, w)
+        Ln  = sp.integrate(Pn, (w, 0, w))          # L_n(w) = ∫_0^w P_n(x) dx
+        L1  = sp.N(Ln.subs(w, 1))
+        # si L1 ≈ 0, probá siguiente n (evita división numérica rara)
+        if abs(L1) < 1e-14:
+            continue
+        Lhat = Ln / L1                              # normalizado: Lhat(1)=1
+        val  = float(abs(sp.N(Lhat.subs(w, Wan))))
+        H2_Wan = 1.0 / (1.0 + eps2 * val**2)
+        if show:
+            print(f"[Papoulis] n={n_try}: Lhat(Wan)≈{val:.4g}, |H|^2(Wan)≈{H2_Wan:.4g}")
+        if H2_Wan <= target + 1e-12:
+            n_found = n_try
+            break
+
+    if n_found is None:
+        n_found = n_max
+        if show:
+            print(f"[Papoulis] No cumplió con n≤{n_max}, uso n={n_found} (mejor esfuerzo).")
+
+    # Construir G(s) simbólica con Lhat(s/i)
+    Pn   = sp.legendre(n_found, w)
+    Ln   = sp.integrate(Pn, (w, 0, w))
+    L1   = sp.N(Ln.subs(w, 1))
+    Lhat = sp.simplify(sp.together(Ln / L1))
+    Fsym = Lhat.subs(w, s/sp.I)                    # Lhat(s/i)
+    Gs   = sp.simplify(sp.together(1 / (1 + eps2 * (Fsym**2))))
+
+    # Polos y ceros con tu helper
+    z_sym, p_sym = get_zeros_and_poles(Gs, var=s)
+    zeros = np.array(z_sym, dtype=complex) if (hasattr(z_sym,'__len__') and len(z_sym)>0) else np.array([], dtype=complex)
+    poles = np.array(p_sym, dtype=complex) if (hasattr(p_sym,'__len__') and len(p_sym)>0) else np.array([], dtype=complex)
+    useful_poles = np.array([p for p in poles if np.real(p) < 0], dtype=complex)
+
+    label = f"|H(jΩ)| Legendre-Papoulis (n={n_found})"
+    return zeros, useful_poles, label, n_found
