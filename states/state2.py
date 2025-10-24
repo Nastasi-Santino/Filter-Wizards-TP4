@@ -3,8 +3,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 import math
-from utils.pz_tools import get_zeros_and_poles, plot_pz_map, reverse_bessel_poly, design_legendre_papoulis_lp
+from utils.pz_tools import get_zeros_and_poles, plot_pz_map, reverse_bessel_poly, design_legendre_papoulis_by_specs, gd_analog_ba
 from sympy.abc import xi , w, n, s
+from scipy.signal import besselap
+from scipy import signal
+
+
 
 # --- SymPy para polinomio Butterworth y pretty print ---
 import sympy as sp
@@ -320,73 +324,78 @@ def run():
 
 
 
-    elif opcion == 5:  # Bessel (Thomson) — SOLO plantilla pasabajos
+
+    elif opcion == 5:  # Bessel (Thomson) — SOLO plantilla pasabajos (SciPy bessel)
         N_MAX = 20
         elegido = None
-        zeros_chosen = None
-        poles_chosen = None
 
-        # Chequeo de plantilla LP: PB=[0,1], SB=[Wan, 1.5*Wan]
+        zeros = np.array([], dtype=complex)
+        useful_poles = np.array([], dtype=complex)
+        curve_label = "Bessel (Thomson)"
+
         for n_try in range(1, N_MAX + 1):
             try:
-                theta_n, _ = reverse_bessel_poly(n_try, var=s)
-                Gs = 1 / theta_n   # Prototipo Bessel: H(s) = 1/Θ_n(s). H(0)=1.
+                # Prototipo Bessel (Thomson) normalización 'delay'
+                # Tomo ZPK para evaluar |H(jw)|
+                z_sc, p_sc, k_sc = signal.bessel(n_try, 1.0, analog=True, output='zpk', norm='delay')
 
-                z_sym, p_sym = get_zeros_and_poles(Gs, var=s)
-                z_arr = np.array(z_sym, dtype=complex) if len(z_sym) else np.array([], dtype=complex)
-                p_arr = np.array(p_sym, dtype=complex) if len(p_sym) else np.array([], dtype=complex)
-                poles_lhp = np.array([p for p in p_arr if np.real(p) < 0], dtype=complex)
+                z_arr = np.array(z_sc, dtype=complex) if z_sc is not None else np.empty(0, dtype=complex)
+                p_arr = np.array(p_sc, dtype=complex)
+
+                # Polos en LHP
+                poles_lhp = p_arr[np.real(p_arr) < 0]
                 if poles_lhp.size == 0:
-                    continue  # sin polos útiles → siguiente orden
+                    continue
 
-                # Evaluación plantilla (K=1, Bessel ya tiene H(0)=1):
-                w_pass = np.linspace(0.0, 1.0, 400)            # pasabajos
-                w_stop = np.linspace(Wan, Wan*1.5, 400)        # atenuación
+                # === FIX: Forzar H(0)=1 con K complejo (no lo conviertas a float) ===
+                denom0 = np.prod(-poles_lhp, dtype=complex) if poles_lhp.size else (1+0j)
+                numer0 = np.prod(-z_arr,     dtype=complex) if z_arr.size     else (1+0j)
+                K_dc   = denom0 / numer0     # H(0) = K_dc / ∏(-p_i) = 1
 
-                H_pass = eval_Hjw(w_pass, z_arr, poles_lhp, K=1.0)
-                H_stop = eval_Hjw(w_stop, z_arr, poles_lhp, K=1.0)
+                # Plantilla LP: PB=[0,1], SB=[Wan, 1.5*Wan]
+                w_pass = np.linspace(0.0, 1.0, 400)       # incluye w=0 → aten. arranca en 0 dB
+                w_stop = np.linspace(Wan, Wan * 1.5, 400)
 
-                min_pass = float(np.min(np.abs(H_pass))) if H_pass.size else 0.0
-                max_stop = float(np.max(np.abs(H_stop))) if H_stop.size else 1.0
+                H_pass = eval_Hjw(w_pass, z_arr, poles_lhp, K=K_dc)
+                H_stop = eval_Hjw(w_stop, z_arr, poles_lhp, K=K_dc)
 
-                # Plantilla LP: |H| >= Gp_lin en PB y |H| <= Ga_lin en SB
+                if H_pass.size == 0 or H_stop.size == 0:
+                    continue
+
+                min_pass = float(np.min(np.abs(H_pass)))
+                max_stop = float(np.max(np.abs(H_stop)))
+
+                # Condiciones de plantilla
                 if (min_pass >= Gp_lin) and (max_stop <= Ga_lin):
                     elegido = n_try
-                    zeros_chosen = z_arr
-                    poles_chosen = poles_lhp
+                    zeros = z_arr
+                    useful_poles = poles_lhp
+                    curve_label = f"Bessel (Thomson), n = {elegido}"
                     print(f"Orden Bessel elegido por plantilla: n = {elegido}")
                     break
+
             except Exception as e:
                 print(f"[Bessel n={n_try}] aviso: {e}")
 
+        # Fallback si nada cumple
         if elegido is None:
-            # Ninguno cumple → usar n=15 y graficar igual
-            print(f"Ningún orden 1..{N_MAX} cumple la plantilla. Se grafica con n={N_MAX}.")
-            theta_n, _ = reverse_bessel_poly(N_MAX, var=s)
-            Gs = 1 / theta_n
-            z_sym, p_sym = get_zeros_and_poles(Gs, var=s)
-            zeros_chosen = np.array(z_sym, dtype=complex) if len(z_sym) else np.array([], dtype=complex)
-            p_arr = np.array(p_sym, dtype=complex) if len(p_sym) else np.array([], dtype=complex)
-            poles_chosen = np.array([p for p in p_arr if np.real(p) < 0], dtype=complex)
+            n_fallback = min(N_MAX, 15)
+            print(f"Ningún orden 1..{N_MAX} cumple la plantilla. Se grafica con n={n_fallback}.")
+            z_sc, p_sc, k_sc = signal.bessel(n_fallback, 1.0, analog=True, output='zpk', norm='delay')
 
-        # Dejar listos para el ploteo final (tu lógica no cambia)
-        zeros = zeros_chosen if zeros_chosen is not None else np.array([], dtype=complex)
-        useful_poles = poles_chosen if poles_chosen is not None else np.array([], dtype=complex)
+            z_arr = np.array(z_sc, dtype=complex) if z_sc is not None else np.empty(0, dtype=complex)
+            p_arr = np.array(p_sc, dtype=complex)
+            poles_lhp = p_arr[np.real(p_arr) < 0]
 
+            # === FIX aplicado también en el fallback ===
+            denom0 = np.prod(-poles_lhp, dtype=complex) if poles_lhp.size else (1+0j)
+            numer0 = np.prod(-z_arr,     dtype=complex) if z_arr.size     else (1+0j)
+            K_dc   = denom0 / numer0
 
-    elif opcion == 6:  # Legendre (Óptimo-L, Papoulis)
-        try:
-            zeros, useful_poles, curve_label, n_leg = design_legendre_papoulis_lp(
-                Gp_lin, Ga_lin, Wan,
-                get_zeros_and_poles=get_zeros_and_poles,
-                n_max=30, show=False
-            )
-            print(f"Legendre-Papoulis: orden n = {n_leg}")
-        except ValueError as e:
-            print(f"No se pudo diseñar Legendre-Papoulis: {e}")
-            zeros = np.array([], dtype=complex)
-            useful_poles = np.array([], dtype=complex)
-            curve_label = "Legendre-Papoulis (inválido)"
+            zeros = z_arr
+            useful_poles = poles_lhp
+            curve_label = f"Bessel (Thomson), n = {n_fallback} (fallback)"
+
 
 
 

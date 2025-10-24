@@ -1,8 +1,22 @@
 # utils/pz_tools.py
 import numpy as np
 import sympy as sp
+import math
 from sympy.abc import s, w
+from numpy import polynomial
+from numpy.polynomial import Polynomial as P
+from numpy import asarray
+from fractions import Fraction as F
+from scipy import signal
 
+
+# Opcional: alta precisión con mpmath (si está instalada)
+try:
+    from mpmath import mp
+    _mpmath_available = True
+except Exception:
+    mp = None
+    _mpmath_available = False
 
 try:
     from scipy import signal
@@ -136,85 +150,181 @@ def plot_pz_map(zeros, poles, r=1.0, fill=False):
 
 
 
-def reverse_bessel_poly(n: int, var=None):
+# --- Bessel (Thomson) ---
+
+
+# --- helper: retardo de grupo analógico (numérico) ---
+def gd_analog_ba(ba, w):
     """
-    Devuelve (Theta_n(s), s), el polinomio de Bessel 'reverso' de orden n.
-    Recurrencia:
-        Θ_0(s) = 1
-        Θ_1(s) = s + 1
-        Θ_{m+1}(s) = (2m+1) * s * Θ_m(s) + Θ_{m-1}(s),   m >= 1
+    Retardo de grupo τ_g(w) = -dφ/dω para filtro analógico definido por (b, a) en s.
+    Derivada numérica sobre H(jω). Devuelve escalar float.
     """
-    if var is None:
-        var = s
+    b, a = ba
 
-    if n <= 0:
-        return sp.Integer(1), var
-    if n == 1:
-        return var + 1, var
+    def Hjw(w_):
+        s = 1j * w_
+        num = np.polyval(b, s)
+        den = np.polyval(a, s)
+        return num / den
 
-    theta_prev2 = sp.Integer(1)    # Θ_0
-    theta_prev1 = var + 1          # Θ_1
-    for m in range(1, n):          # genera Θ_2 ... Θ_n
-        theta = (2*m + 1) * var * theta_prev1 + theta_prev2
-        theta_prev2, theta_prev1 = theta_prev1, sp.expand(theta)
-    return theta_prev1, var
+    # Paso de derivación: relativo si w>0, absoluto si w≈0
+    dw = (1e-6 * w) if (w > 0) else 1e-6
+    H1 = Hjw(w)
+    H2 = Hjw(w + dw)
+
+    # fase local y diferencia desenrollada
+    ph = np.unwrap([np.angle(H1), np.angle(H2)])
+    dphi = ph[1] - ph[0]
+    tau_g = - dphi / dw
+    return float(tau_g)
 
 
 
-# --- Legendre (Óptimo-L): diseño de prototipo LP normalizado ---
 
-def design_legendre_papoulis_lp(Gp_lin, Ga_lin, Wan, get_zeros_and_poles, n_max=30, show=False):
+
+
+
+
+
+
+
+
+
+
+
+
+
+def reverse_bessel_poly(n: int, var):
     """
-    Prototipo LP normalizado sin rizado en PB:
-      |H|^2 = 1 / (1 + eps^2 * Lhat_n(Ω)^2),
-      eps^2 = 1/Gp^2 - 1,
-      Lhat_n(Ω) = ( ∫_0^Ω P_n(x) dx ) / ( ∫_0^1 P_n(x) dx )
-
-    Devuelve: zeros, useful_poles, label, n
+    Polinomio inverso de Bessel (Thomson) normalizado:
+      Θ̂_n(s) = Θ_n(s) / Θ_n(0), con Θ̂_n(0)=1
+    Coeficientes: a_k = (2n - k)! / [ 2^{(n-k)} (n-k)! k! ]
+    Devuelve: (Θ̂_n(s) como sympy expr, lista de coeficientes normalizados [a0..an])
+              (coeficientes en potencias ascendentes de s)
+    Uso: Gs = 1 / Θ̂_n(s)
     """
-    if Wan <= 1.0:
-        raise ValueError("Legendre-Papoulis: Wan debe ser > 1 (prototipo LP).")
-    eps2 = (1.0 / (Gp_lin**2)) - 1.0
-    if eps2 <= 0:
-        raise ValueError("Legendre-Papoulis: Gp debe ser < 1 (lineal).")
+    if n < 1:
+        raise ValueError("n debe ser >= 1")
 
-    target = Ga_lin**2
-    n_found = None
+    # a_k sin normalizar (enteros exactos con big-int de Python)
+    coeffs = []
+    for k in range(n + 1):
+        num = math.factorial(2*n - k)
+        den = (2**(n - k)) * math.factorial(n - k) * math.factorial(k)
+        coeffs.append(sp.Rational(num, den))
 
-    for n_try in range(1, n_max+1):
-        Pn  = sp.legendre(n_try, w)
-        Ln  = sp.integrate(Pn, (w, 0, w))          # L_n(w) = ∫_0^w P_n(x) dx
-        L1  = sp.N(Ln.subs(w, 1))
-        # si L1 ≈ 0, probá siguiente n (evita división numérica rara)
-        if abs(L1) < 1e-14:
-            continue
-        Lhat = Ln / L1                              # normalizado: Lhat(1)=1
-        val  = float(abs(sp.N(Lhat.subs(w, Wan))))
-        H2_Wan = 1.0 / (1.0 + eps2 * val**2)
-        if show:
-            print(f"[Papoulis] n={n_try}: Lhat(Wan)≈{val:.4g}, |H|^2(Wan)≈{H2_Wan:.4g}")
-        if H2_Wan <= target + 1e-12:
-            n_found = n_try
+    # normalizo para que Θ̂_n(0) = 1
+    a0 = coeffs[0]
+    coeffs_hat = [sp.simplify(c / a0) for c in coeffs]
+
+    # Θ̂_n(s) = sum_{k=0..n} a_k s^k  (potencias ASCENDENTES)
+    Theta_hat = sum(coeffs_hat[k] * (var**k) for k in range(n + 1))
+    return Theta_hat, coeffs_hat
+
+
+
+
+def _optimum_poly(N):
+    """
+    Devuelve coeficientes enteros del polinomio 'óptimo' L_N(ω) tal que
+    |H(jω)|^2 = 1 / (1 + ε^2 * L_N(ω^2)).
+    Los coeficientes están en potencias de ω decrecientes (solo potencias pares).
+    """
+    if N == 0:
+        return np.array([0])
+
+    if N % 2:  # N impar
+        k = (N - 1) // 2
+        a = np.arange(1, 2*(k + 1) + 1, 2)  # 1,3,5,...
+        # denominador sqrt(2)*(k+1) sale fuera del cuadrado
+    else:      # N par
+        k = (N - 2) // 2
+        a = np.arange(1, 2*(k + 1) + 1, 2)  # 1,3,5,...
+        # denominador sqrt((k+1)*(k+2)) sale fuera del cuadrado
+        if k % 2:   # k impar -> anulos los pares
+            a[::2] = 0
+        else:       # k par   -> anulos los impares
+            a[1::2] = 0
+
+    a = [F(int(i)) for i in a]
+    domain = [F(-1), F(1)]
+
+    # v(x) = sum a_i P_i(x), luego lo paso a serie de potencias
+    v = polynomial.Legendre(a, domain).convert(domain, polynomial.Polynomial)
+
+    # Íntegrando según Papoulis/Fukada (ramas N impar/par)
+    if N % 2:
+        integrand = v**2 / (2*(k + 1)**2)
+    else:
+        integrand = P([F(1), F(1)]) * v**2 / ((k + 1) * (k + 2))
+
+    # Integro y evalúo entre x = -1 y x = 2*ω^2 - 1  (sale función de ω^2)
+    indef = P(polynomial.polynomial.polyint(integrand.coef), domain)
+    defi = indef(P([F(-1), F(0), F(2)])) - indef(F(-1))
+
+    # Devuelvo como enteros, orden decreciente en ω
+    return np.array([int(x) for x in defi.coef[::-1]], dtype=int)
+
+def _roots_legendre_L(a):
+    """Raíces (polos) del denominador; usa mpmath si está disponible para alta N."""
+    N = (len(a) - 1)//2
+    if _mpmath_available:
+        mp.dps = 150
+        p, err = mp.polyroots(list(map(mp.mpf, a)), maxsteps=1000, error=True)
+        if err > mp.mpf('1e-32'):
+            raise ValueError(f"No se pudo calcular con precisión la orden {N} (error {err})")
+        p = asarray(p, dtype=complex)
+    else:
+        p = np.roots(a)
+        if N > 25:
+            # Numéricamente inestable con solo dobles >~25
+            raise ValueError("Óptimo-L puede fallar numéricamente para N > 25 sin mpmath.")
+    return p
+
+def legendre_papoulis_prototype(N):
+    """
+    Prototipo analógico de orden N: devuelve (z, p, k) con |H(0)| = 1.
+    """
+    # Magnitud cuadrada: 1 / (1 + L_N(ω^2))
+    a = _optimum_poly(N).astype(float)
+    a[-1] = 1.0
+    # Sustitución s = jω -> −s^2 = ω^2: cambiar signo en potencias 2,6,10,...
+    a[-3::-4] = -a[-3::-4]
+
+    z = np.array([], dtype=complex)
+    p = _roots_legendre_L(a)
+    p = p[p.real < 0]  # Polinomio de Hurwitz (solo semiplano izquierdo)
+
+    # Normalizo para |H(0)| = 1  => k = ∏|p_i|
+    k = float(np.prod(np.abs(p)))
+    return z, p, k
+
+def _L_at(N, w):
+    """Evalúa L_N(ω^2) usando el polinomio resultante (que ya está en ω con solo potencias pares)."""
+    coeffs = _optimum_poly(N).astype(float)
+    return np.polyval(coeffs, w)
+
+def design_legendre_papoulis_by_specs(Gp_lin, Ga_lin, Wan, n_max=30):
+    """
+    Busca el orden mínimo N tal que |H(jΩa)| <= Ga_lin, con
+    |H(jω)| = 1 / sqrt(1 + ε^2 L_N(ω^2)),  ε^2 = 1/Gp^2 - 1.
+    Retorna zeros, poles, label, N
+    """
+    # ε^2 desde especificación de pasabanda (Gp en magnitud lineal)
+    eps2 = max(float(1.0/(Gp_lin**2) - 1.0), 0.0)
+
+    chosen = None
+    for N in range(1, min(n_max, 30) + 1):
+        LN = _L_at(N, Wan)     # Esto es L_N(Wan^2)
+        Hwan = 1.0 / np.sqrt(1.0 + eps2*LN)
+        if Hwan <= Ga_lin + 1e-12:  # cumple stopband en Ωa
+            chosen = N
             break
 
-    if n_found is None:
-        n_found = n_max
-        if show:
-            print(f"[Papoulis] No cumplió con n≤{n_max}, uso n={n_found} (mejor esfuerzo).")
+    if chosen is None:
+        raise ValueError("No se encontró N ≤ n_max que cumpla las especificaciones.")
 
-    # Construir G(s) simbólica con Lhat(s/i)
-    Pn   = sp.legendre(n_found, w)
-    Ln   = sp.integrate(Pn, (w, 0, w))
-    L1   = sp.N(Ln.subs(w, 1))
-    Lhat = sp.simplify(sp.together(Ln / L1))
-    Fsym = Lhat.subs(w, s/sp.I)                    # Lhat(s/i)
-    Gs   = sp.simplify(sp.together(1 / (1 + eps2 * (Fsym**2))))
-
-    # Polos y ceros con tu helper
-    z_sym, p_sym = get_zeros_and_poles(Gs, var=s)
-    zeros = np.array(z_sym, dtype=complex) if (hasattr(z_sym,'__len__') and len(z_sym)>0) else np.array([], dtype=complex)
-    poles = np.array(p_sym, dtype=complex) if (hasattr(p_sym,'__len__') and len(p_sym)>0) else np.array([], dtype=complex)
-    useful_poles = np.array([p for p in poles if np.real(p) < 0], dtype=complex)
-
-    label = f"|H(jΩ)| Legendre-Papoulis (n={n_found})"
-    return zeros, useful_poles, label, n_found
+    z, p, k = legendre_papoulis_prototype(chosen)
+    curve_label = f"Legendre-Papoulis (Óptimo-L), n = {chosen}"
+    return z, p, curve_label, chosen
+# --- FIN LEGENDRE–PAPOULIS ---------------------------------------------------
