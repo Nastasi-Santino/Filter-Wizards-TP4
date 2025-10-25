@@ -324,8 +324,22 @@ def run():
 
 
 
+    elif opcion == 5:  # Bessel (Thomson) — diseño iterativo tipo design_lpf + tu pipeline
+        # gpass/gstop positivos (dB) a partir de tus umbrales en dB
+        gpass = -Gp_db   # p.ej. si Gp_db=-1.0 dB → gpass=+1.0 dB
+        gstop = -Ga_db   # p.ej. si Ga_db=-40 dB  → gstop=+40 dB
 
-    elif opcion == 5:  # Bessel (Thomson) — SOLO plantilla pasabajos (SciPy bessel)
+        # Normalización de plantilla: PB=[0,1], SB=[Wan, 1.5*Wan]
+        wp_n = 1.0
+        ws_n = float(Wan)
+
+        # Semilla del orden: arrancamos cerca del Butterworth mínimo
+        try:
+            N_ref, _ = signal.buttord(wp_n, ws_n, gpass, gstop, analog=True)
+            N = max(1, int(N_ref) - 1)
+        except Exception:
+            N = 0
+
         N_MAX = 20
         elegido = None
 
@@ -333,68 +347,101 @@ def run():
         useful_poles = np.array([], dtype=complex)
         curve_label = "Bessel (Thomson)"
 
-        for n_try in range(1, N_MAX + 1):
+        # malla para localizar cruce a -gpass dB en el prototipo base
+        w_grid = np.logspace(-2, 2, 4000)
+
+        while True:
+            N += 1
+            if N > N_MAX:
+                print("No se pudo encontrar un orden Bessel que cumpla la plantilla dentro del límite.")
+                break
+
+            # 1) Prototipo Bessel base (cutoff normalizado, norma 'mag')
+            #    (para hallar la frecuencia donde |H| cae a -gpass dB)
+            b_base, a_base = signal.bessel(N, 1.0, 'low', analog=True, norm='mag', output='ba')
+
+            # 2) Encontrar ω_base tal que |H_base(jω_base)| = 10^{-gpass/20}
+            w_base, H_base = signal.freqs(b_base, a_base, worN=w_grid)
+            mag_db_base = 20.0 * np.log10(np.maximum(np.abs(H_base), 1e-300))
+
+            # si ni al final llega a -gpass dB, subir orden
+            if mag_db_base[-1] > -gpass:
+                continue
+
+            # cruce por interpolación en la zona descendente
             try:
-                # Prototipo Bessel (Thomson) normalización 'delay'
-                # Tomo ZPK para evaluar |H(jw)|
-                z_sc, p_sc, k_sc = signal.bessel(n_try, 1.0, analog=True, output='zpk', norm='delay')
+                w_at_gpass = np.interp(-gpass, mag_db_base[::-1], w_base[::-1])
+            except Exception:
+                # si no podemos interpolar (curva rara), subir orden
+                continue
 
-                z_arr = np.array(z_sc, dtype=complex) if z_sc is not None else np.empty(0, dtype=complex)
-                p_arr = np.array(p_sc, dtype=complex)
+            # 3) Escalar: s -> s * Wn  =>  a_k' = a_k / Wn^k
+            Wn = float(w_at_gpass)
+            a = np.array(a_base, dtype=float)
+            for k_idx in range(len(a)):
+                a[k_idx] = a_base[k_idx] / (Wn ** k_idx)
 
-                # Polos en LHP
-                poles_lhp = p_arr[np.real(p_arr) < 0]
-                if poles_lhp.size == 0:
-                    continue
+            # Numerador para H(0)=1: b(s)=a0 (término independiente del denom.) → H(0)=1
+            b = np.array([a[-1]], dtype=float)
 
-                # === FIX: Forzar H(0)=1 con K complejo (no lo conviertas a float) ===
-                denom0 = np.prod(-poles_lhp, dtype=complex) if poles_lhp.size else (1+0j)
-                numer0 = np.prod(-z_arr,     dtype=complex) if z_arr.size     else (1+0j)
-                K_dc   = denom0 / numer0     # H(0) = K_dc / ∏(-p_i) = 1
-
-                # Plantilla LP: PB=[0,1], SB=[Wan, 1.5*Wan]
-                w_pass = np.linspace(0.0, 1.0, 400)       # incluye w=0 → aten. arranca en 0 dB
-                w_stop = np.linspace(Wan, Wan * 1.5, 400)
-
-                H_pass = eval_Hjw(w_pass, z_arr, poles_lhp, K=K_dc)
-                H_stop = eval_Hjw(w_stop, z_arr, poles_lhp, K=K_dc)
-
-                if H_pass.size == 0 or H_stop.size == 0:
-                    continue
-
-                min_pass = float(np.min(np.abs(H_pass)))
-                max_stop = float(np.max(np.abs(H_stop)))
-
-                # Condiciones de plantilla
-                if (min_pass >= Gp_lin) and (max_stop <= Ga_lin):
-                    elegido = n_try
-                    zeros = z_arr
-                    useful_poles = poles_lhp
-                    curve_label = f"Bessel (Thomson), n = {elegido}"
-                    print(f"Orden Bessel elegido por plantilla: n = {elegido}")
-                    break
-
-            except Exception as e:
-                print(f"[Bessel n={n_try}] aviso: {e}")
-
-        # Fallback si nada cumple
-        if elegido is None:
-            n_fallback = min(N_MAX, 15)
-            print(f"Ningún orden 1..{N_MAX} cumple la plantilla. Se grafica con n={n_fallback}.")
-            z_sc, p_sc, k_sc = signal.bessel(n_fallback, 1.0, analog=True, output='zpk', norm='delay')
-
-            z_arr = np.array(z_sc, dtype=complex) if z_sc is not None else np.empty(0, dtype=complex)
-            p_arr = np.array(p_sc, dtype=complex)
+            # 4) Pasar a ceros/polos/ganancia para TU evaluador eval_Hjw
+            #    Polos: raíces del denominador; ceros: ninguno (numerador constante)
+            p_arr = np.roots(a).astype(complex)
             poles_lhp = p_arr[np.real(p_arr) < 0]
+            if poles_lhp.size == 0:
+                continue
+            z_arr = np.empty(0, dtype=complex)
 
-            # === FIX aplicado también en el fallback ===
-            denom0 = np.prod(-poles_lhp, dtype=complex) if poles_lhp.size else (1+0j)
-            numer0 = np.prod(-z_arr,     dtype=complex) if z_arr.size     else (1+0j)
-            K_dc   = denom0 / numer0
+            # Ganancia K para que H(0)=1 con tu eval_Hjw: K = ∏(-p_i) (sin ceros finitos)
+            K_dc = np.prod(-poles_lhp, dtype=complex)
 
-            zeros = z_arr
+            # 5) Verificar plantilla con TU evaluador:
+            #    PB: ω∈[0,1]  ⇒ |H| ≥ Gp_lin ;  SB: ω∈[Wan,1.5Wan] ⇒ |H| ≤ Ga_lin
+            w_pass = np.linspace(0.0, 1.0, 400)
+            w_stop = np.linspace(Wan, Wan * 1.5, 400)
+
+            H_pass = eval_Hjw(w_pass, z_arr, poles_lhp, K=K_dc)
+            H_stop = eval_Hjw(w_stop, z_arr, poles_lhp, K=K_dc)
+
+            if (H_pass.size == 0) or (H_stop.size == 0):
+                continue
+
+            min_pass = float(np.min(np.abs(H_pass)))
+            max_stop = float(np.max(np.abs(H_stop)))
+
+            if (min_pass >= Gp_lin) and (max_stop <= Ga_lin):
+                elegido = N
+                zeros = z_arr
+                useful_poles = poles_lhp
+                curve_label = f"Bessel (Thomson), n = {elegido}"
+                print(f"Orden Bessel elegido por plantilla: n = {elegido}")
+                break
+
+        # Fallback: si no cumplió, graficar con N razonable (último probado o 15)
+        if elegido is None:
+            n_fallback = min(max(N, 1), 15)
+            print(f"Ningún orden 1..{N_MAX} cumple la plantilla. Se grafica con n={n_fallback}.")
+            b_base, a_base = signal.bessel(n_fallback, 1.0, 'low', analog=True, norm='mag', output='ba')
+            w_base, H_base = signal.freqs(b_base, a_base, worN=w_grid)
+            mag_db_base = 20.0 * np.log10(np.maximum(np.abs(H_base), 1e-300))
+            # si no llega a -gpass, tomar Wn=1 como último recurso
+            if mag_db_base[-1] > -gpass:
+                Wn = 1.0
+            else:
+                w_at_gpass = np.interp(-gpass, mag_db_base[::-1], w_base[::-1])
+                Wn = float(w_at_gpass)
+
+            a = np.array(a_base, dtype=float)
+            for k_idx in range(len(a)):
+                a[k_idx] = a_base[k_idx] / (Wn ** k_idx)
+            b = np.array([a[-1]], dtype=float)
+
+            p_arr = np.roots(a).astype(complex)
+            poles_lhp = p_arr[np.real(p_arr) < 0]
+            zeros = np.empty(0, dtype=complex)
             useful_poles = poles_lhp
             curve_label = f"Bessel (Thomson), n = {n_fallback} (fallback)"
+
 
 
 
